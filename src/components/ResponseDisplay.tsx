@@ -5,9 +5,14 @@ import { useEffect, useRef } from "react";
 interface ResponseDisplayProps {
   content: string;
   isLoading: boolean;
+  hasImage: boolean;
 }
 
-export function ResponseDisplay({ content, isLoading }: ResponseDisplayProps) {
+export function ResponseDisplay({
+  content,
+  isLoading,
+  hasImage,
+}: ResponseDisplayProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -16,8 +21,26 @@ export function ResponseDisplay({ content, isLoading }: ResponseDisplayProps) {
     }
   }, [content]);
 
-  if (!content && !isLoading) {
-    return null;
+  // Waiting for image
+  if (!content && !isLoading && !hasImage) {
+    return (
+      <div className="rounded-2xl bg-white/40 border border-primary-100/30 py-5 px-6 text-center">
+        <p className="text-primary-800/60 font-medium text-sm">
+          Waiting for an image to analyze
+        </p>
+      </div>
+    );
+  }
+
+  // Image uploaded but not yet analyzed
+  if (!content && !isLoading && hasImage) {
+    return (
+      <div className="rounded-2xl bg-white/40 border border-primary-100/30 py-5 px-6 text-center">
+        <p className="text-primary-800/60 font-medium text-sm">
+          Image ready &mdash; click &ldquo;Analyze Image&rdquo; to begin
+        </p>
+      </div>
+    );
   }
 
   return (

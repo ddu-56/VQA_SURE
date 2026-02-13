@@ -29,7 +29,7 @@ export function ChatInterface({
   };
 
   return (
-    <div className="glass-card-strong rounded-2xl flex flex-col h-[28rem] overflow-hidden animate-fade-in">
+    <div className="rounded-2xl bg-white/50 border border-primary-100/30 flex flex-col h-[28rem] overflow-hidden animate-fade-in">
       {/* Messages */}
       <div
         className="flex-1 overflow-y-auto p-5 space-y-4 custom-scrollbar"
