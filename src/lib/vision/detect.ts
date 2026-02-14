@@ -1,9 +1,20 @@
-import { pipeline, type ObjectDetectionPipeline } from "@huggingface/transformers";
+import type { ObjectDetectionPipeline } from "@huggingface/transformers";
 import type { DetectedObject } from "./types";
 
 const DETECTION_MODEL = "Xenova/detr-resnet-50";
 const CONFIDENCE_THRESHOLD = 0.7;
 const TIMEOUT_MS = 15_000;
+
+// Dynamic import avoids TypeScript overload resolution issues with pipeline()
+async function loadPipeline(): Promise<ObjectDetectionPipeline> {
+  const { pipeline } = await import("@huggingface/transformers");
+  const detector = await (pipeline as Function)(
+    "object-detection",
+    DETECTION_MODEL,
+    { dtype: "fp32" }
+  );
+  return detector as ObjectDetectionPipeline;
+}
 
 // Lazy singleton with HMR protection (follows official HF Next.js pattern)
 const createDetectorSingleton = () => {
@@ -11,9 +22,7 @@ const createDetectorSingleton = () => {
   return {
     getInstance(): Promise<ObjectDetectionPipeline> {
       if (!instance) {
-        instance = pipeline("object-detection", DETECTION_MODEL, {
-          dtype: "fp32",
-        });
+        instance = loadPipeline();
       }
       return instance;
     },
