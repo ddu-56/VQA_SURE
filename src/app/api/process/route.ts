@@ -1,5 +1,8 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { NextRequest, NextResponse } from "next/server";
+import { preprocessImage, formatVisionContext } from "@/lib/vision/preprocess";
+
+export const runtime = "nodejs";
 
 const MAX_IMAGE_SIZE_MB = 5;
 const MAX_IMAGE_SIZE_BYTES = MAX_IMAGE_SIZE_MB * 1024 * 1024;
@@ -11,13 +14,17 @@ For anything unclear, explicitly state the ambiguity: "This appears to be X, but
 Format your response with clear sections:
 - **Overview**: A 2-3 sentence summary of the entire scene.
 - **Objects**: Grouped by region, with counts, relative locations, and salient attributes (color, shape, text).
-- **Ambiguities**: A bulleted list of anything uncertain or unclear in the image.`;
+- **Ambiguities**: A bulleted list of anything uncertain or unclear in the image.
+
+IMPORTANT: If the user's message includes a "PRE-ANALYZED IMAGE DATA" section, use it as a factual anchor for your description. Trust the object counts and locations from the detection data. If OCR text is provided, include it verbatim. However, still describe visual details (colors, materials, context) from the image itself, as the pre-analyzed data only covers object identity and location.`;
 
 const ITERATIVE_SYSTEM_PROMPT = `You are an ambiguity-aware image description assistant designed for users with low vision.
 
 On the first turn: Give a brief 2-3 sentence overview of this image. Then list 2-3 specific areas of ambiguity as questions the user might want to explore. Keep it conversational.
 
-On follow-up turns: Answer the user's question about the image in detail. If new ambiguities arise, mention them. Stay conversational and helpful.`;
+On follow-up turns: Answer the user's question about the image in detail. If new ambiguities arise, mention them. Stay conversational and helpful.
+
+IMPORTANT: If the user's message includes a "PRE-ANALYZED IMAGE DATA" section, use it as a factual anchor for your description. Trust the object counts and locations from the detection data. If OCR text is provided, include it verbatim. The pre-analyzed data supplements your visual understanding — use both together.`;
 
 interface ChatMessage {
   role: "user" | "assistant";
@@ -101,6 +108,25 @@ export async function POST(request: NextRequest) {
     inlineData: { data: base64Data, mimeType },
   };
 
+  // Run vision preprocessing on first requests only (not iterative follow-ups)
+  const isFirstRequest = !(mode === "iterative" && history && history.length > 0);
+  let visionContext = "";
+  if (isFirstRequest) {
+    try {
+      const visionResult = await preprocessImage(base64Data, mimeType);
+      visionContext = formatVisionContext(visionResult);
+      if (visionContext) {
+        console.log(
+          `[Vision] Preprocessed in ${visionResult.processingTimeMs}ms: ` +
+            `${visionResult.detectedObjects.length} objects, ` +
+            `OCR: ${visionResult.ocrText ? "yes" : "no"}`
+        );
+      }
+    } catch (error) {
+      console.error("[Vision] Preprocessing failed, continuing without:", error);
+    }
+  }
+
   try {
     if (mode === "iterative" && history && history.length > 0) {
       // Start a chat with history for iterative mode
@@ -168,13 +194,13 @@ export async function POST(request: NextRequest) {
       // First request (one-pass or first iterative turn)
       let prompt: string;
       if (userMessage) {
-        prompt = userMessage;
+        prompt = visionContext + userMessage;
       } else if (mode === "one-pass") {
         prompt =
-          "Please describe this image in detail following your instructions.";
+          visionContext + "Please describe this image in detail following your instructions.";
       } else {
         prompt =
-          "Please give me an overview of this image and highlight any ambiguities.";
+          visionContext + "Please give me an overview of this image and highlight any ambiguities.";
       }
 
       const result = await model.generateContentStream([prompt, imagePart]);

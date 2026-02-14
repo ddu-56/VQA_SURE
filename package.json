@@ -11,9 +11,12 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.74.0",
     "@google/generative-ai": "^0.24.1",
+    "@huggingface/transformers": "^3.8.1",
     "next": "16.1.6",
     "react": "19.2.3",
     "react-dom": "19.2.3",
+    "sharp": "^0.34.5",
+    "tesseract.js": "^7.0.0",
     "zustand": "^5.0.11"
   },
   "devDependencies": {

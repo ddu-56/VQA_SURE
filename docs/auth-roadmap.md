@@ -1,144 +1,82 @@
-# Ambiguity-Aware VQA Application Roadmap & Strategy
+# Ambiguity-Aware VQA Application Roadmap & Strategy (Hybrid Token-Efficient)
 
 ## Project Goal
 Build an accessible prototype application (Web/Mobile) that provides detailed, ambiguity-aware image descriptions. The core value is helping users—especially those with low vision—understand complex visual scenes by explicitly addressing ambiguity through two distinct interaction modes.
 
----
+## Technical Strategy: Hybrid Token-Efficient Pipeline
+
+To minimize expensive "Vision Token" costs while maintaining high accuracy for counting and localization, we will use a **Two-Stage Pipeline** that combines traditional Computer Vision (Object Detection + OCR) with Generative AI.
+
+### 1. Stage 1: Structural Analysis (Low Cost / Local)
+Instead of sending every pixel to a large VLM, we first extract structured data:
+-   **Object Detection (YOLOv8 / MediaPipe):**
+    -   Identify classes (e.g., "book", "bottle", "keyboard").
+    -   Get precise bounding boxes `[x, y, w, h]` for spatial reasoning (left/right/top/bottom).
+    -   Get exact counts (Crucial for ambiguity: "I see 5 books...").
+-   **Text Recognition (OCR):**
+    -   Use Tesseract or Google Cloud Vision to extract text from objects (e.g., book titles).
+-   **Output:** A structured JSON summary of the scene.
+
+### 2. Stage 2: Semantic Synthesis (Generative AI)
+-   **Input:** The JSON summary + User Query.
+-   **Model:** A cost-effective LLM (e.g., GPT-3.5-Turbo, Llama 3) or a highly efficient VLM (Gemini Flash, GPT-4o-mini).
+-   **Role:** Synthesizes the structured data into natural, human-like descriptions.
+    -   *Example Prompt:* "Here is a list of objects and text. Describe the scene naturally. Group the books together. Note any ambiguity in the text."
+
+**Pros:**
+-   **Cost:** Drastically reduces token usage for simple queries ("How many books?").
+-   **Speed:** Local detection is instant.
+-   **Control:** Easier to force specific output formats from structured inputs.
+
+**Cons:**
+-   **Detail Loss:** YOLO might miss subtle attributes ("gold foil seal"). We mitigate this by sending a low-res image or cropped regions to a cheap VLM *only* when necessary.
 
 ## Core Features & Requirements
 
-### 1. Inputs & Outputs
-- **Input:**
-  - Image containing multiple objects (max 5MB).
-  - User question (text).
-- **Output:**
-  - **Ambiguity-Aware Description:** Explicitly states what is ambiguous (e.g., "This appears to be X, but could be Y").
-  - **Object Details:** Counts, relative locations (left/right/top/bottom), salient attributes (color, shape, text).
-  - **Grouped Information:** "Three books on the left..." followed by details.
-  - **Shareable Result:** User can copy or save the description as plain text.
+### 1. Interaction Modes
 
-> **Note — Video (v2):** Video support (keyframe extraction, temporal ambiguity) is intentionally deferred. The prototype focuses exclusively on still images.
-
-### 2. Interaction Modes
-The application must support two distinct modes:
-
-#### Mode A: Respond in One Pass
-- **Goal:** Comprehensive, structured description in a single response.
-- **Experience:** User uploads → System analyzes → System returns a full streamed report.
-- **Content:** Aggregates all detected objects, resolves basic ambiguity where possible, and clearly states what remains ambiguous.
-
-**System Prompt:**
-```
-Describe this image in detail. Group objects by region (left/center/right, foreground/background).
-For anything unclear, explicitly state the ambiguity: "This appears to be X, but could be Y."
-Format your response with clear sections: Overview, Objects, Ambiguities.
-```
+#### Mode A: Respond in One Pass (Hybrid Optimized)
+-   **Goal:** Comprehensive description.
+-   **Process:**
+    1.  Run YOLO to detect all objects.
+    2.  Run OCR on text regions.
+    3.  LLM generates a summary: "I see 7 objects: a bottle and a stack of books with titles like 'Construction Materials'..."
+-   **Ambiguity Handling:** If YOLO confidence is low or objects overlap heavily, the LLM reports this as visual ambiguity.
 
 #### Mode B: Clarify Iteratively
-- **Goal:** Conversational discovery of image content.
-- **Experience:**
-  1. User uploads.
-  2. System gives a 2–3 sentence high-level summary and lists 2–3 ambiguities as questions.
-  3. User asks a follow-up.
-  4. System provides specific details. History persists for the session; uploading a new image resets history.
+-   **Goal:** Conversational discovery.
+-   **Process:**
+    1.  System lists high-level detections: "I see books, a bottle, and cabling."
+    2.  User asks: "What about the bottle?"
+    3.  System uses the specific bounding box data for the bottle (and potentially runs a VLM on just that crop) to describe it in detail.
 
-**System Prompt (turn 1):**
-```
-Give a brief 2-3 sentence overview of this image. Then list 2-3 specific areas of ambiguity
-as questions the user might want to explore. Keep it conversational.
-```
+### 2. Accessibility (Critical)
+-   **Screen Reader First:** Ensure all UI elements are labeled.
+-   **Semantic HTML:** Proper heading hierarchies.
+-   **Keyboard Navigation:** Full support.
 
-### 3. Accessibility (Critical)
-- **Screen Reader First:** All UI elements labeled and navigable via VoiceOver, NVDA, TalkBack.
-- **Semantic HTML:** Proper heading hierarchy and landmark regions.
-- **Keyboard Navigation:** Full non-mouse interaction support; never suppress `outline` focus rings.
-- **Streaming Output:** Render to `aria-live="polite"` regions so screen readers announce content as it arrives.
-- **Accessibility is a hard gate** — each phase must pass an axe/Lighthouse audit before proceeding.
-
----
-
-## Technical Strategy
+## Architecture Overview
 
 ### Tech Stack
-- **Framework:** Next.js (App Router)
-- **Styling:** Tailwind CSS
-- **Icons:** Lucide React
-- **State Management:** Zustand
-- **AI Model:** Claude claude-opus-4-6 (`claude-opus-4-6`) via Anthropic SDK (`@anthropic-ai/sdk`)
-
-### Why Claude claude-opus-4-6
-Claude excels at nuanced, hedged language ("this *appears* to be...") which maps directly to the ambiguity-aware output requirement. A single multimodal model handles both modes via system prompt — no separate object detection pipeline needed at prototype stage.
-
-### API Contract
-
-**Endpoint:** `POST /api/process`
-
-```typescript
-// Request
-{
-  image: string;          // base64-encoded image (max 5MB enforced server-side)
-  mode: "one-pass" | "iterative";
-  history?: {             // iterative mode only
-    role: "user" | "assistant";
-    content: string;
-  }[];
-  userMessage?: string;   // iterative follow-up text
-}
-
-// Response (streamed text/event-stream)
-{
-  content: string;        // markdown-formatted description
-  ambiguities?: string[]; // extracted list for iterative mode UI hints
-}
-```
-
-**Error handling:**
-- `400` — image exceeds `MAX_IMAGE_SIZE_MB = 5` or missing required fields
-- `500` — upstream API failure, with a user-friendly fallback message
-- Guard route: return `500` immediately if `ANTHROPIC_API_KEY` is not set
-
-### State (Zustand Store)
-
-```typescript
-interface VQAStore {
-  mode: "one-pass" | "iterative";
-  image: File | null;
-  chatHistory: { role: "user" | "assistant"; content: string }[];
-  isLoading: boolean;
-  setMode: (mode: "one-pass" | "iterative") => void;
-  setImage: (file: File) => void;   // also calls reset() on new image
-  addMessage: (msg: Message) => void;
-  reset: () => void;                // clears history + image
-}
-```
-
-### Frontend Components
-1. **`Layout`** — accessible shell with landmark regions (`<main>`, `<nav>`, `<header>`).
-2. **`ModeSwitcher`** — toggle with `role="radiogroup"`, keyboard navigable.
-3. **`ImageUploader`** — drag & drop + keyboard; shows preview with alt text field.
-4. **`ResponseDisplay`** *(One Pass)* — structured, streamed text blocks in `aria-live` region.
-5. **`ChatInterface`** *(Iterative)* — conversational UI with history; message list is `aria-live`.
-6. **`ShareResult`** — copy-to-clipboard button with accessible confirmation feedback.
+-   **Framework:** Next.js (App Router)
+-   **Styling:** Tailwind CSS
+-   **Frontend CV:** `transformers.js` (for in-browser YOLO if possible) or server-side Python API.
+-   **Backend AI:** OpenAI API (GPT-4o-mini).
 
 ### Data Flow
-1. User selects mode and uploads image.
-2. Frontend validates size, encodes to base64, dispatches to Zustand store.
-3. `POST /api/process` — server constructs mode-specific prompt, calls Claude with `stream: true`.
-4. Streamed response written to `aria-live` region in real time.
-5. Iterative mode: response appended to `chatHistory`; user sends follow-up; history included in next request.
-6. New image upload triggers `reset()` — clears history, resets UI.
-
----
+1.  **Upload:** User selects image.
+2.  **Analyze (API):**
+    -   Step 1: Convert image to tensor/blob.
+    -   Step 2: Run Inference (YOLO).
+    -   Step 3: Run Inference (OCR).
+    -   Step 4: Prompt LLM with structured results.
+3.  **Response:** JSON data returns to frontend.
+4.  **Render:** Screen reader announces results.
 
 ## Implementation Phases
+1.  **Setup:** Next.js + Tailwind.
+2.  **CV Integration:** Set up the Object Detection pipeline (mock or real).
+3.  **LLM Integration:** Connect the structured output to the Generative Model.
+4.  **UI/UX:** Build the "One Pass" and "Iterative" modes.
+5.  **Refinement:** optimize for speed and accuracy.
 
-| # | Phase | Build | Done When |
-|---|-------|-------|-----------|
-| 1 | **Project Setup** | `create-next-app` (App Router + Tailwind + TypeScript), install Zustand + Anthropic SDK, set up `.env.local` with `ANTHROPIC_API_KEY` | App runs at `localhost:3000`; env var loads correctly |
-| 2 | **API Route** | Build `/api/process`, integrate Claude claude-opus-4-6 with streaming, handle both mode prompts, enforce 5MB limit, add error guards | API returns a streamed ambiguity-aware description for a hardcoded test image |
-| 3 | **Accessible UI Shell** | Layout, `ModeSwitcher`, `ImageUploader` with drag-drop + keyboard; wire Zustand store | Passes axe/Lighthouse a11y audit; full keyboard navigation works |
-| 4 | **Mode A — One Pass** | `ResponseDisplay` with streamed output to `aria-live` region, `ShareResult` copy button | User uploads image, receives structured streamed report; screen reader announces content |
-| 5 | **Mode B — Iterative** | `ChatInterface` with Zustand-managed history, follow-up input, history reset on new image | Multi-turn conversation works; new image upload clears history correctly |
-| 6 | **Polish & Audit** | Loading/error states, mobile responsiveness, final axe audit, copy-to-clipboard confirmation | No axe violations; usable on mobile with screen reader enabled |
-
-> **v2 Backlog:** Video support (keyframe extraction, temporal ambiguity descriptions).
