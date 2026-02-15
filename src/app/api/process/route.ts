@@ -1,5 +1,6 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import { NextRequest, NextResponse } from "next/server";
+import { getVisionProvider } from "@/lib/vision/providers";
+import type { ChatMessage } from "@/lib/vision/providers";
 import { preprocessImage, formatVisionContext } from "@/lib/vision/preprocess";
 
 export const runtime = "nodejs";
@@ -26,11 +27,6 @@ On follow-up turns: Answer the user's question about the image in detail. If new
 
 IMPORTANT: If the user's message includes a "PRE-ANALYZED IMAGE DATA" section, use it as a factual anchor for your description. Trust the object counts and locations from the detection data. If OCR text is provided, include it verbatim. The pre-analyzed data supplements your visual understanding — use both together.`;
 
-interface ChatMessage {
-  role: "user" | "assistant";
-  content: string;
-}
-
 interface ProcessRequest {
   image: string;
   mode: "one-pass" | "iterative";
@@ -46,15 +42,33 @@ function getMimeType(base64: string): string {
   return "image/jpeg";
 }
 
-export async function POST(request: NextRequest) {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey || apiKey === "your_key_here") {
-    return NextResponse.json(
-      { error: "GEMINI_API_KEY is not configured" },
-      { status: 500 }
-    );
-  }
+/** Convert an async generator of text chunks into an SSE ReadableStream */
+function createSSEStream(generator: AsyncGenerator<string>): ReadableStream {
+  const encoder = new TextEncoder();
+  return new ReadableStream({
+    async start(controller) {
+      try {
+        for await (const text of generator) {
+          const data = JSON.stringify({ text });
+          controller.enqueue(encoder.encode(`data: ${data}\n\n`));
+        }
+        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+        controller.close();
+      } catch (err) {
+        const errorMsg =
+          err instanceof Error ? err.message : "Stream processing error";
+        controller.enqueue(
+          encoder.encode(
+            `data: ${JSON.stringify({ error: errorMsg })}\n\n`
+          )
+        );
+        controller.close();
+      }
+    },
+  });
+}
 
+export async function POST(request: NextRequest) {
   let body: ProcessRequest;
   try {
     body = await request.json();
@@ -93,20 +107,19 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const genAI = new GoogleGenerativeAI(apiKey);
+  const mimeType = getMimeType(base64Data);
   const systemPrompt =
     mode === "one-pass" ? ONE_PASS_SYSTEM_PROMPT : ITERATIVE_SYSTEM_PROMPT;
-  const mimeType = getMimeType(base64Data);
 
-  const model = genAI.getGenerativeModel({
-    model: "gemini-2.0-flash",
-    systemInstruction: systemPrompt,
-  });
-
-  // Build the image part for Gemini
-  const imagePart = {
-    inlineData: { data: base64Data, mimeType },
-  };
+  // Get the configured vision provider
+  let provider;
+  try {
+    provider = getVisionProvider();
+  } catch (err) {
+    const message =
+      err instanceof Error ? err.message : "Vision provider not configured";
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
 
   // Run vision preprocessing on first requests only (not iterative follow-ups)
   const isFirstRequest = !(mode === "iterative" && history && history.length > 0);
@@ -128,67 +141,16 @@ export async function POST(request: NextRequest) {
   }
 
   try {
+    let stream: AsyncGenerator<string>;
+
     if (mode === "iterative" && history && history.length > 0) {
-      // Start a chat with history for iterative mode
-      const chat = model.startChat({
-        history: [
-          // First turn: image + initial prompt
-          {
-            role: "user",
-            parts: [
-              imagePart,
-              {
-                text:
-                  history.find((m) => m.role === "user")?.content ||
-                  "Please give me an overview of this image and highlight any ambiguities.",
-              },
-            ],
-          },
-          // Remaining history as text-only turns
-          ...history.slice(1).map((msg) => ({
-            role: msg.role === "assistant" ? ("model" as const) : ("user" as const),
-            parts: [{ text: msg.content }],
-          })),
-        ],
-      });
-
-      const followUp =
-        userMessage || "Please continue describing the image.";
-      const result = await chat.sendMessageStream(followUp);
-
-      // Return streaming response
-      const encoder = new TextEncoder();
-      const readableStream = new ReadableStream({
-        async start(controller) {
-          try {
-            for await (const chunk of result.stream) {
-              const text = chunk.text();
-              if (text) {
-                const data = JSON.stringify({ text });
-                controller.enqueue(encoder.encode(`data: ${data}\n\n`));
-              }
-            }
-            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-            controller.close();
-          } catch (err) {
-            const errorMsg =
-              err instanceof Error ? err.message : "Stream processing error";
-            controller.enqueue(
-              encoder.encode(
-                `data: ${JSON.stringify({ error: errorMsg })}\n\n`
-              )
-            );
-            controller.close();
-          }
-        },
-      });
-
-      return new Response(readableStream, {
-        headers: {
-          "Content-Type": "text/event-stream",
-          "Cache-Control": "no-cache",
-          Connection: "keep-alive",
-        },
+      // Iterative follow-up — use chat with history
+      stream = provider.chatStream({
+        image: base64Data,
+        mimeType,
+        history,
+        userMessage: userMessage || "Please continue describing the image.",
+        systemPrompt,
       });
     } else {
       // First request (one-pass or first iterative turn)
@@ -197,48 +159,29 @@ export async function POST(request: NextRequest) {
         prompt = visionContext + userMessage;
       } else if (mode === "one-pass") {
         prompt =
-          visionContext + "Please describe this image in detail following your instructions.";
+          visionContext +
+          "Please describe this image in detail following your instructions.";
       } else {
         prompt =
-          visionContext + "Please give me an overview of this image and highlight any ambiguities.";
+          visionContext +
+          "Please give me an overview of this image and highlight any ambiguities.";
       }
 
-      const result = await model.generateContentStream([prompt, imagePart]);
-
-      const encoder = new TextEncoder();
-      const readableStream = new ReadableStream({
-        async start(controller) {
-          try {
-            for await (const chunk of result.stream) {
-              const text = chunk.text();
-              if (text) {
-                const data = JSON.stringify({ text });
-                controller.enqueue(encoder.encode(`data: ${data}\n\n`));
-              }
-            }
-            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-            controller.close();
-          } catch (err) {
-            const errorMsg =
-              err instanceof Error ? err.message : "Stream processing error";
-            controller.enqueue(
-              encoder.encode(
-                `data: ${JSON.stringify({ error: errorMsg })}\n\n`
-              )
-            );
-            controller.close();
-          }
-        },
-      });
-
-      return new Response(readableStream, {
-        headers: {
-          "Content-Type": "text/event-stream",
-          "Cache-Control": "no-cache",
-          Connection: "keep-alive",
-        },
+      stream = provider.generateStream({
+        image: base64Data,
+        mimeType,
+        prompt,
+        systemPrompt,
       });
     }
+
+    return new Response(createSSEStream(stream), {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      },
+    });
   } catch (err) {
     const message =
       err instanceof Error ? err.message : "Failed to process image";
