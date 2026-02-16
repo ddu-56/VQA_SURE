@@ -1,36 +1,148 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Ambiguity-Aware VQA (Visual Question Answering)
 
-## Getting Started
+A web application that helps users understand complex visual scenes through AI-powered image description. Designed with accessibility in mind for low-vision users.
 
-First, run the development server:
+## Features
+
+- **One-Pass Mode**: Get a full structured description of any image — overview, objects by region, and flagged ambiguities
+- **Iterative Mode**: Have a conversation about an image, asking follow-up questions to explore specific details
+- **Hybrid Preprocessing**: DETR object detection + Tesseract OCR run locally before the AI model, improving accuracy for object counting and text recognition
+- **Dual Provider Support**: Run fully local with Ollama (free, private) or use Google Gemini (cloud)
+
+## Prerequisites
+
+- [Node.js](https://nodejs.org) v18 or higher
+- [Ollama](https://ollama.com) (for local AI — recommended)
+
+### Install Ollama
+
+**Mac:**
+```bash
+brew install ollama
+```
+
+**Windows/Linux:**
+Download from [ollama.com/download](https://ollama.com/download)
+
+### Pull an AI Model
+
+```bash
+ollama pull moondream
+```
+
+Choose one based on your needs:
+| Model | Size | Speed | Quality |
+|-------|------|-------|---------|
+| `moondream` | ~1.8B params | Fast | Good for most images |
+| `llava` | ~7B params | Slower | More detailed descriptions |
+
+## Setup
+
+### 1. Install Dependencies
+
+```bash
+npm install
+```
+
+### 2. Configure Environment
+
+Create a `.env.local` file in the project root:
+
+```env
+# Vision provider: "ollama" (local, free) or "gemini" (cloud)
+VISION_PROVIDER=ollama
+
+# Ollama settings (only needed if using ollama)
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=moondream
+
+# Gemini settings (only needed if using gemini)
+GEMINI_API_KEY=your_key_here
+```
+
+## Running the App
+
+### 1. Start Ollama (in a separate terminal)
+
+```bash
+ollama serve
+```
+
+### 2. Start the App
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### 3. Open in Browser
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Go to [http://localhost:3000](http://localhost:3000)
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Usage
 
-## Learn More
+1. Select a mode — **One Pass** (full description) or **Iterative** (conversational)
+2. Upload an image (drag-drop or click, max 5MB)
+3. Click **Describe Image** and wait for the streamed response
+4. In iterative mode, type follow-up questions to explore the image further
 
-To learn more about Next.js, take a look at the following resources:
+## Using Gemini Instead of Ollama
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+If you prefer cloud-based processing (no local install required):
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+1. Get a free API key from [Google AI Studio](https://aistudio.google.com/apikey)
+2. Set `VISION_PROVIDER=gemini` and your `GEMINI_API_KEY` in `.env.local`
+3. No need to run `ollama serve`
 
-## Deploy on Vercel
+Note: Gemini has a free-tier token quota that may be exhausted with heavy use.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Project Structure
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```
+src/
+  app/
+    page.tsx                # Main page — handles API calls and layout
+    layout.tsx              # Root layout with metadata
+    globals.css             # Design system (glassmorphism, gradients, animations)
+    api/process/route.ts    # API endpoint — validation, preprocessing, provider routing
+  components/
+    ImageUploader.tsx       # Drag-drop image upload with preview
+    ModeSwitcher.tsx        # One-pass / Iterative toggle
+    ResponseDisplay.tsx     # Streamed one-pass output display
+    ChatInterface.tsx       # Iterative conversation UI
+  lib/
+    store.ts                # Zustand state management
+    vision/
+      detect.ts             # DETR object detection (local)
+      ocr.ts                # Tesseract.js text recognition (local)
+      preprocess.ts         # Runs detection + OCR in parallel, formats results
+      types.ts              # Shared type definitions
+      providers/
+        types.ts            # VisionProvider interface
+        ollama.ts           # Ollama provider (local)
+        gemini.ts           # Gemini provider (cloud)
+        index.ts            # Provider factory
+```
+
+## Tech Stack
+
+- **Frontend**: Next.js 16, React 19, TypeScript, Tailwind CSS 4, Zustand
+- **Backend**: Next.js API Routes (Node.js runtime)
+- **AI Providers**: Ollama (local) / Google Gemini (cloud)
+- **Preprocessing**: DETR object detection (`@huggingface/transformers`), Tesseract.js OCR
+- **Streaming**: Server-Sent Events (SSE)
+
+## Stopping the App
+
+1. Press `Ctrl+C` in the terminal running `npm run dev`
+2. Press `Ctrl+C` in the terminal running `ollama serve`
+
+The pulled model stays cached on disk — no need to re-download next time.
+
+## Troubleshooting
+
+| Issue | Fix |
+|-------|-----|
+| "Cannot connect to Ollama" | Make sure `ollama serve` is running in another terminal |
+| Slow first request | The DETR model (~40MB) downloads on first use — subsequent requests are faster |
+| Gemini 429 error | Free-tier quota exhausted — wait or switch to `VISION_PROVIDER=ollama` |
+| Build errors with sharp/onnxruntime | Run `npm install` again — native dependencies may need rebuilding |
